@@ -11,10 +11,9 @@ project/
 ├── scraper/            # Extract — reader untuk WFP dan World Bank
 ├── etl/                # Transform — preprocessing dan integrasi data
 ├── sql/                # DDL, DML, view, index, extension PostgreSQL
-├── data/
-│   ├── raw/            # Output mentah dari scraper (CSV, JSON)
-│   └── processed/      # Output bersih siap masuk DB
-└── docs/               # Dokumentasi tambahan
+└── data/
+    ├── raw/            # Output mentah dari scraper (CSV, JSON)
+    └── processed/      # Output bersih siap masuk DB
 ```
 
 ## Alur Pipeline
