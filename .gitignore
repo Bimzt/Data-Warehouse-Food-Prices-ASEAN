@@ -1,0 +1,21 @@
+# Environment & secrets
+.env
+*.env
+
+# Data mentah & processed
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
