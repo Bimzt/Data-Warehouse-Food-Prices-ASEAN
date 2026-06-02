@@ -1,6 +1,6 @@
 # Data-Warehouse-Food-Prices-ASEAN
 Food price volatility remains a critical challenge across ASEAN nations, where millions depend on affordable access to staple commodities. Without a centralized and structured data system, identifying trends, anomalies, and economic correlations becomes difficult for analysts and policymakers alike.
-This project addresses that gap by building an end-to-end ETL pipeline and data warehouse that consolidates WFP Global Food Prices data with World Bank macroeconomic indicators — including inflation, GDP per capita, and food import dependency across 10 ASEAN countries from 2024 to 2025.
+This project addresses that gap by building an end-to-end ETL pipeline and data warehouse that consolidates WFP Global Food Prices data with World Bank macroeconomic indicators including inflation, GDP per capita, and food import dependency across 10 ASEAN countries from 2024 to 2025.
 Built on the Kimball star schema methodology with PostgreSQL as the backend, the system enables efficient OLAP queries through materialized views, indexing, and PostgreSQL extensions. The result is a structured, queryable foundation for analyzing how economic conditions correlate with food price movements at the commodity and country level across the region.
 
 **Sumber Data:**
