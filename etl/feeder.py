@@ -83,14 +83,14 @@ def main():
     conn = get_connection()
 
     if args.reset:
-        print("[feeder] --reset aktif: menghapus semua tabel...")
+        print("[feeder] --reset aktif: menghapus semua tabel")
         drop_tables(conn)
 
     # Jalankan DDL untuk membuat tabel jika belum ada
     run_ddl(conn)
 
     # Load setiap tabel sesuai urutan
-    print("\n[feeder] Memulai load data...")
+    print("\n[feeder] Memulai load data")
     for table_name in LOAD_ORDER:
         csv_path = PROCESSED_DIR / f"{table_name}.csv"
         if not csv_path.exists():
