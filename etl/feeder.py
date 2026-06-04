@@ -10,21 +10,19 @@ load_dotenv()
 
 PROCESSED_DIR = Path("data/processed")
 
-# Urutan load penting: dimensi harus masuk sebelum fakta (foreign key)
 LOAD_ORDER = [
     "dim_waktu",
     "dim_negara",
     "dim_komoditas",
     "dim_indikator",
     "fact_harga_pangan",
+    "fact_indikator_ekonomi",
 ]
 
 def get_connection():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        raise EnvironmentError(
-            "DATABASE_URL tidak ditemukan di .env\n"
-        )
+        raise EnvironmentError("DATABASE_URL tidak ditemukan di .env\n")
     conn = psycopg2.connect(db_url)
     print("[feeder] Koneksi ke PostgreSQL berhasil.")
     return conn
@@ -43,7 +41,14 @@ def run_ddl(conn, ddl_path: str = "sql/ddl.sql"):
 
 
 def drop_tables(conn):
-    tables = ["fact_harga_pangan", "dim_waktu", "dim_negara", "dim_komoditas", "dim_indikator"]
+    tables = [
+        "fact_indikator_ekonomi",
+        "fact_harga_pangan",
+        "dim_waktu",
+        "dim_negara",
+        "dim_komoditas",
+        "dim_indikator",
+    ]
     with conn.cursor() as cur:
         for t in tables:
             cur.execute(f"DROP TABLE IF EXISTS {t} CASCADE;")
@@ -58,7 +63,6 @@ def load_table(conn, table_name: str, df: pd.DataFrame):
 
     cols   = list(df.columns)
     values = [tuple(row) for row in df.itertuples(index=False, name=None)]
-
     values = [
         tuple(None if pd.isna(v) else v for v in row)
         for row in values
@@ -74,10 +78,46 @@ def load_table(conn, table_name: str, df: pd.DataFrame):
     print(f"[feeder] {table_name}: {len(df):,} baris dimuat.")
 
 
+def verify(conn):
+    """Verifikasi jumlah baris semua tabel setelah load."""
+    tables = [
+        "dim_waktu",
+        "dim_negara",
+        "dim_komoditas",
+        "dim_indikator",
+        "fact_harga_pangan",
+        "fact_indikator_ekonomi",
+    ]
+    print("\n[feeder] === VERIFIKASI AKHIR ===")
+    with conn.cursor() as cur:
+        for t in tables:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {t}")
+                count = cur.fetchone()[0]
+                print(f"  {t:30s}: {count:,} baris")
+            except Exception as e:
+                print(f"  {t:30s}: ERROR — {e}")
+                conn.rollback()
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT i.indicator_code, COUNT(fi.id_fakta_ind) AS total_fakta
+            FROM dim_indikator i
+            LEFT JOIN fact_indikator_ekonomi fi ON i.indikator_id = fi.indikator_id
+            GROUP BY i.indicator_code
+            ORDER BY i.indicator_code
+        """)
+        rows = cur.fetchall()
+    print("\n[feeder] Cek dim_indikator → fact_indikator_ekonomi:")
+    for row in rows:
+        status = "✓" if row[1] > 0 else "⚠ ORPHAN"
+        print(f"  {row[0]:<25}: {row[1]:>4} fakta  {status}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Feeder — Fase 3 Load ke PostgreSQL")
     parser.add_argument("--reset", action="store_true",
-                        help="Drop & recreate semua tabel sebelum load (hati-hati!)")
+                        help="Drop & recreate semua tabel sebelum load")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -86,19 +126,18 @@ def main():
         print("[feeder] --reset aktif: menghapus semua tabel")
         drop_tables(conn)
 
-    # Jalankan DDL untuk membuat tabel jika belum ada
     run_ddl(conn)
 
-    # Load setiap tabel sesuai urutan
     print("\n[feeder] Memulai load data")
     for table_name in LOAD_ORDER:
         csv_path = PROCESSED_DIR / f"{table_name}.csv"
         if not csv_path.exists():
             print(f"[feeder] {table_name}: file tidak ditemukan ({csv_path}), dilewati.")
             continue
-
         df = pd.read_csv(csv_path)
         load_table(conn, table_name, df)
+
+    verify(conn)
 
     conn.close()
     print("\n[feeder] Fase 3 selesai. Koneksi ditutup.")
