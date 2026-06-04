@@ -69,7 +69,7 @@ def load_wfp_batches() -> pd.DataFrame:
     raw.columns = raw.columns.str.lower().str.strip()
     raw["date"] = pd.to_datetime(raw["date"], errors="coerce")
     raw = raw.dropna(subset=["date"])
-    raw = raw.drop_duplicates()  # deduplikasi — penting, dulu ada 7668→5036
+    raw = raw.drop_duplicates()
     raw = raw.dropna(subset=["price"])
     raw = raw[raw["price"] > 0]
     raw["commodity"] = raw["commodity"].apply(normalize_commodity)
@@ -104,7 +104,6 @@ def load_worldbank_batches() -> pd.DataFrame:
         for r in records:
             if r.get("value") is None:
                 continue
-            # Map ISO2 → ISO3 (fix bug lama)
             iso2 = r["country"]["id"]
             iso3 = WORLDBANK_ISO2_TO_ISO3.get(iso2)
             if iso3 is None:
@@ -134,7 +133,6 @@ def build_dim_waktu(wfp: pd.DataFrame) -> pd.DataFrame:
     return dim[["waktu_id", "year", "month", "quarter", "semester", "periode"]]
 
 def build_dim_negara(wfp: pd.DataFrame) -> pd.DataFrame:
-    # Bangun dari WFP yang sudah punya countryiso3
     dim = wfp[["countryiso3", "country_name"]].drop_duplicates().copy()
     dim = dim.rename(columns={"countryiso3": "iso3"})
     dim = dim.sort_values("country_name").reset_index(drop=True)
