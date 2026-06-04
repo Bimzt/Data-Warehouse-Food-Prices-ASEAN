@@ -20,6 +20,15 @@ ISO3_TO_NAME = {
     "MYS": "Malaysia",
 }
 
+WORLDBANK_ISO2_TO_ISO3 = {
+    "ID": "IDN",
+    "KH": "KHM",
+    "LA": "LAO",
+    "MM": "MMR",
+    "PH": "PHL",
+    "VN": "VNM",
+}
+
 COMMODITY_NORM = {
     "Rice - Retail":         "Rice",
     "Rice (local) - Retail": "Rice",
@@ -30,7 +39,6 @@ COMMODITY_NORM = {
     "Palm oil - Retail":     "Palm Oil",
     "Cooking oil - Retail":  "Cooking Oil",
 }
-
 
 def normalize_commodity(name: str) -> str:
     if pd.isna(name):
@@ -61,13 +69,14 @@ def load_wfp_batches() -> pd.DataFrame:
     raw.columns = raw.columns.str.lower().str.strip()
     raw["date"] = pd.to_datetime(raw["date"], errors="coerce")
     raw = raw.dropna(subset=["date"])
-    raw = raw.drop_duplicates()
+    raw = raw.drop_duplicates()  # deduplikasi — penting, dulu ada 7668→5036
     raw = raw.dropna(subset=["price"])
     raw = raw[raw["price"] > 0]
     raw["commodity"] = raw["commodity"].apply(normalize_commodity)
     raw["year"]    = raw["date"].dt.year
     raw["month"]   = raw["date"].dt.month
     raw["quarter"] = raw["date"].dt.quarter
+    raw["semester"] = raw["month"].apply(lambda m: 1 if m <= 6 else 2)
 
     raw["country_name"] = raw["countryiso3"].map(ISO3_TO_NAME)
     before = len(raw)
@@ -78,7 +87,6 @@ def load_wfp_batches() -> pd.DataFrame:
 
     print(f"[preprocess] Baris WFP setelah cleaning: {len(raw):,}")
     return raw
-
 
 def load_worldbank_batches() -> pd.DataFrame:
     files = sorted(glob.glob(str(RAW_DIR / "raw_worldbank_batch_*.json")))
@@ -96,11 +104,16 @@ def load_worldbank_batches() -> pd.DataFrame:
         for r in records:
             if r.get("value") is None:
                 continue
+            # Map ISO2 → ISO3 (fix bug lama)
+            iso2 = r["country"]["id"]
+            iso3 = WORLDBANK_ISO2_TO_ISO3.get(iso2)
+            if iso3 is None:
+                continue
             rows.append({
                 "indicator_code": r["indicator"]["id"],
                 "indicator_name": r["indicator"]["value"],
-                "country_code":   r["country"]["id"],
-                "country_name":   r["country"]["value"],
+                "iso3":           iso3,
+                "country_name":   ISO3_TO_NAME.get(iso3, iso3),
                 "year":           int(r["date"]),
                 "value":          float(r["value"]),
             })
@@ -111,25 +124,23 @@ def load_worldbank_batches() -> pd.DataFrame:
 
     wb = pd.concat(frames, ignore_index=True).drop_duplicates()
     print(f"[preprocess] Total baris World Bank setelah load: {len(wb):,}")
-    print(f"[preprocess] Nama negara di World Bank: {sorted(wb['country_name'].unique().tolist())}")
     return wb
 
-
 def build_dim_waktu(wfp: pd.DataFrame) -> pd.DataFrame:
-    dim = wfp[["year", "month", "quarter"]].drop_duplicates().copy()
+    dim = wfp[["year", "month", "quarter", "semester"]].drop_duplicates().copy()
     dim = dim.sort_values(["year", "month"]).reset_index(drop=True)
     dim["waktu_id"] = dim.index + 1
     dim["periode"]  = dim["year"].astype(str) + "-" + dim["month"].astype(str).str.zfill(2)
-    return dim[["waktu_id", "year", "month", "quarter", "periode"]]
-
+    return dim[["waktu_id", "year", "month", "quarter", "semester", "periode"]]
 
 def build_dim_negara(wfp: pd.DataFrame) -> pd.DataFrame:
-    dim = wfp[["country_name"]].drop_duplicates().copy()
+    # Bangun dari WFP yang sudah punya countryiso3
+    dim = wfp[["countryiso3", "country_name"]].drop_duplicates().copy()
+    dim = dim.rename(columns={"countryiso3": "iso3"})
     dim = dim.sort_values("country_name").reset_index(drop=True)
     dim["negara_id"] = dim.index + 1
     dim["region"]    = "ASEAN"
-    return dim[["negara_id", "country_name", "region"]]
-
+    return dim[["negara_id", "country_name", "iso3", "region"]]
 
 def build_dim_komoditas(wfp: pd.DataFrame) -> pd.DataFrame:
     cols = ["commodity"]
@@ -156,32 +167,24 @@ def build_dim_indikator(wb: pd.DataFrame) -> pd.DataFrame:
     dim["indikator_id"] = dim.index + 1
     return dim[["indikator_id", "indicator_code", "indicator_name"]]
 
-
-def build_fact(wfp: pd.DataFrame,
-               wb: pd.DataFrame,
-               dim_waktu: pd.DataFrame,
-               dim_negara: pd.DataFrame,
-               dim_komoditas: pd.DataFrame) -> pd.DataFrame:
-
-    # Join dimensi waktu
+def build_fact_harga_pangan(wfp: pd.DataFrame,
+                             dim_waktu: pd.DataFrame,
+                             dim_negara: pd.DataFrame,
+                             dim_komoditas: pd.DataFrame) -> pd.DataFrame:
     fact = wfp.merge(
         dim_waktu[["waktu_id", "year", "month"]],
         on=["year", "month"], how="left"
     )
-
     fact = fact.merge(
         dim_negara[["negara_id", "country_name"]],
         on="country_name", how="left"
     )
-
-    # Join dimensi komoditas
     fact = fact.merge(
         dim_komoditas[["komoditas_id", "commodity_name"]],
         left_on="commodity", right_on="commodity_name", how="left"
     )
 
-    # Agregasi rata-rata harga bulanan per negara + komoditas
-    agg_cols = ["waktu_id", "negara_id", "komoditas_id", "year"]
+    agg_cols = ["waktu_id", "negara_id", "komoditas_id", "year", "unit", "currency"]
     fact_agg = fact.groupby(agg_cols, as_index=False).agg(
         avg_price=("price", "mean"),
         min_price=("price", "min"),
@@ -189,45 +192,56 @@ def build_fact(wfp: pd.DataFrame,
         record_count=("price", "count"),
     ).round(4)
 
-    if not wb.empty:
-        wb_pivot = wb.pivot_table(
-            index=["country_name", "year"],
-            columns="indicator_code",
-            values="value",
-            aggfunc="mean"
-        ).reset_index()
-        wb_pivot.columns.name = None
-        wb_pivot = wb_pivot.rename(columns={
-            "FP.CPI.TOTL.ZG":    "fp_cpi_totl_zg",
-            "NY.GDP.PCAP.CD":    "ny_gdp_pcap_cd",
-            "NY.GDP.MKTP.KD.ZG": "ny_gdp_mktp_kd_zg",
-            "TM.VAL.FOOD.ZS.UN": "tm_val_food_zs_un",
-        })
-
-        for col in ["fp_cpi_totl_zg", "ny_gdp_pcap_cd", "ny_gdp_mktp_kd_zg", "tm_val_food_zs_un"]:
-            if col not in wb_pivot.columns:
-                wb_pivot[col] = None
-
-        # Join World Bank ke fact via negara_id + year
-        wb_with_id = wb_pivot.merge(
-            dim_negara[["negara_id", "country_name"]],
-            on="country_name", how="left"
-        ).drop(columns=["country_name"])
-
-        fact_agg = fact_agg.merge(
-            wb_with_id,
-            on=["negara_id", "year"],
-            how="left"
-        )
-        filled = fact_agg["fp_cpi_totl_zg"].notna().sum()
-        print(f"[preprocess] Baris fact dengan data World Bank terisi: {filled:,} dari {len(fact_agg):,}")
-
     fact_agg["tahun_partisi"] = fact_agg["year"].astype(int)
     fact_agg = fact_agg.drop(columns=["year"], errors="ignore")
 
     print(f"[preprocess] Baris fact_harga_pangan: {len(fact_agg):,}")
     return fact_agg
 
+
+def build_fact_indikator_ekonomi(wb: pd.DataFrame,
+                                  dim_negara: pd.DataFrame,
+                                  dim_indikator: pd.DataFrame,
+                                  dim_waktu: pd.DataFrame) -> pd.DataFrame:
+    if wb.empty:
+        print("[preprocess] World Bank kosong, fact_indikator_ekonomi tidak dibuat.")
+        return pd.DataFrame()
+
+    # Filter hanya tahun yang ada di dim_waktu
+    valid_years = dim_waktu["year"].unique()
+    wb_filtered = wb[wb["year"].isin(valid_years)].copy()
+    skipped = len(wb) - len(wb_filtered)
+    if skipped > 0:
+        print(f"[preprocess] {skipped} baris WB di-skip")
+
+    # Join negara_id
+    fact = wb_filtered.merge(
+        dim_negara[["negara_id", "iso3"]],
+        on="iso3", how="left"
+    )
+
+    # Join indikator_id
+    fact = fact.merge(
+        dim_indikator[["indikator_id", "indicator_code"]],
+        on="indicator_code", how="left"
+    )
+
+    waktu_jan = dim_waktu[dim_waktu["month"] == 1][["waktu_id", "year"]].copy()
+    fact = fact.merge(waktu_jan, on="year", how="left")
+
+    fact_out = fact[["waktu_id", "negara_id", "indikator_id", "year", "value"]].copy()
+    fact_out = fact_out.rename(columns={"value": "indicator_value"})
+    fact_out["tahun_partisi"] = fact_out["year"].astype(int)
+    fact_out = fact_out.drop(columns=["year"])
+
+    before = len(fact_out)
+    fact_out = fact_out.dropna(subset=["waktu_id", "negara_id", "indikator_id"])
+    after = len(fact_out)
+    if before != after:
+        print(f"[preprocess] {before - after} baris dibuang karena FK null")
+
+    print(f"[preprocess] Baris fact_indikator_ekonomi: {len(fact_out):,}")
+    return fact_out
 
 def main():
     print("[preprocess] Memulai Fase 2 — Transform")
@@ -241,17 +255,22 @@ def main():
     dim_indikator = build_dim_indikator(wb)
 
     print("\n[preprocess] Membangun tabel fakta")
-    fact = build_fact(wfp, wb, dim_waktu, dim_negara, dim_komoditas)
+    fact_harga    = build_fact_harga_pangan(wfp, dim_waktu, dim_negara, dim_komoditas)
+    fact_indikator = build_fact_indikator_ekonomi(wb, dim_negara, dim_indikator, dim_waktu)
 
     print("\n[preprocess] Menyimpan output ke data/processed")
     outputs = {
-        "fact_harga_pangan.csv": fact,
-        "dim_waktu.csv":         dim_waktu,
-        "dim_negara.csv":        dim_negara,
-        "dim_komoditas.csv":     dim_komoditas,
-        "dim_indikator.csv":     dim_indikator,
+        "fact_harga_pangan.csv":       fact_harga,
+        "fact_indikator_ekonomi.csv":  fact_indikator,
+        "dim_waktu.csv":               dim_waktu,
+        "dim_negara.csv":              dim_negara,
+        "dim_komoditas.csv":           dim_komoditas,
+        "dim_indikator.csv":           dim_indikator,
     }
     for filename, df in outputs.items():
+        if df.empty:
+            print(f"  -> {filename} SKIP (kosong)")
+            continue
         path = PROCESSED_DIR / filename
         df.to_csv(path, index=False)
         print(f"  -> {path} ({len(df):,} baris)")
